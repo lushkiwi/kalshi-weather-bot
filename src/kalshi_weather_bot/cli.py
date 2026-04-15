@@ -39,9 +39,11 @@ def inspect_edges(
     log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
 ) -> None:
     """Dry-run: compute fair probabilities and edges, print a table, place no trades."""
-    _bootstrap(config, log_level)
-    typer.echo("inspect-edges is implemented in Milestone 2.")
-    raise typer.Exit(code=2)
+    from kalshi_weather_bot.edge.inspect import format_table, run_inspect_sync
+
+    cfg, secrets = _bootstrap(config, log_level)
+    rows = run_inspect_sync(cfg, secrets)
+    typer.echo(format_table(rows))
 
 
 @app.command()
