@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 from kalshi_weather_bot.config import AppConfig, Secrets
+from kalshi_weather_bot.edge.detector import Candidate, evaluate
 from kalshi_weather_bot.edge.implied import MarketImplied, implied_from_market
 from kalshi_weather_bot.kalshi.client import KalshiClient
 from kalshi_weather_bot.kalshi.markets import list_active_weather_markets
@@ -58,12 +59,17 @@ class EdgeRow:
     city: str
     strike_desc: str
     target_date: date | None
+    hours_to_close: float | None
     market_yes_bid: int | None
     market_yes_ask: int | None
     p_market_mid: float | None
     p_fair: float | None
-    edge_buy_yes: float | None
+    edge_buy_yes: float | None          # gross (no fees)
     edge_buy_no: float | None
+    net_edge_buy_yes: float | None      # fee-adjusted
+    net_edge_buy_no: float | None
+    effective_edge_min: float | None
+    flagged_side: str | None            # 'buy_yes' | 'buy_no' | None
     n_samples: int
     note: str = ""
 
@@ -104,10 +110,22 @@ async def _fetch_forecasts(
     return out
 
 
+def _hours_to_close(m: Market, now: datetime) -> float | None:
+    when = m.close_time or m.expiration_time
+    if when is None:
+        return None
+    return max(0.0, (when - now).total_seconds() / 3600.0)
+
+
 def _build_rows(
     markets: list[Market],
     by_event_date: dict[tuple[str, date], EnsembleForecast],
+    *,
+    edge_min: float,
+    decay_hours: float,
+    now: datetime | None = None,
 ) -> list[EdgeRow]:
+    now = now or datetime.now(tz=timezone.utc)
     # Group markets by event so we can log coherence errors.
     by_event: dict[str, list[Market]] = defaultdict(list)
     for m in markets:
@@ -143,10 +161,31 @@ def _build_rows(
 
             edge_buy_yes: float | None = None
             edge_buy_no: float | None = None
-            if p_fair is not None and implied.p_buy_yes() is not None:
-                edge_buy_yes = p_fair - implied.p_buy_yes()  # type: ignore[operator]
-            if p_fair is not None and implied.p_buy_no() is not None:
-                edge_buy_no = (1.0 - p_fair) - implied.p_buy_no()  # type: ignore[operator]
+            net_yes: float | None = None
+            net_no: float | None = None
+            effective_min: float | None = None
+            flagged_side: str | None = None
+            htc = _hours_to_close(m, now)
+
+            if p_fair is not None and htc is not None:
+                cands: list[Candidate] = evaluate(
+                    p_fair,
+                    implied,
+                    edge_min=edge_min,
+                    hours_to_close=htc,
+                    decay_hours=decay_hours,
+                )
+                for c in cands:
+                    if c.side == "buy_yes":
+                        edge_buy_yes = c.gross_edge
+                        net_yes = c.net_edge
+                    else:
+                        edge_buy_no = c.gross_edge
+                        net_no = c.net_edge
+                    effective_min = c.effective_edge_min
+                flagged = [c for c in cands if c.flagged]
+                if flagged:
+                    flagged_side = max(flagged, key=lambda c: c.net_edge).side
 
             rows.append(
                 EdgeRow(
@@ -155,12 +194,17 @@ def _build_rows(
                     city=city,
                     strike_desc=_strike_desc(m),
                     target_date=target,
+                    hours_to_close=htc,
                     market_yes_bid=m.yes_bid,
                     market_yes_ask=m.yes_ask,
                     p_market_mid=implied.mid,
                     p_fair=p_fair,
                     edge_buy_yes=edge_buy_yes,
                     edge_buy_no=edge_buy_no,
+                    net_edge_buy_yes=net_yes,
+                    net_edge_buy_no=net_no,
+                    effective_edge_min=effective_min,
+                    flagged_side=flagged_side,
                     n_samples=n_samples,
                     note=note,
                 )
@@ -177,7 +221,8 @@ def _build_rows(
 def format_table(rows: list[EdgeRow]) -> str:
     header = (
         f"{'ticker':<28} {'date':<10} {'strike':<14} {'bid/ask':<10} "
-        f"{'p_mkt':>7} {'p_fair':>7} {'edge_Y':>8} {'edge_N':>8} {'n':>4} note"
+        f"{'h':>5} {'p_mkt':>7} {'p_fair':>7} "
+        f"{'net_Y':>7} {'net_N':>7} {'min':>6} {'flag':<8} {'n':>4} note"
     )
     sep = "-" * len(header)
     lines = [header, sep]
@@ -189,11 +234,19 @@ def format_table(rows: list[EdgeRow]) -> str:
         def fmt(v: float | None, decimals: int = 3, width: int = 7) -> str:
             return f"{'':>{width}}" if v is None else f"{v:>{width}.{decimals}f}"
 
+        flag = ""
+        if r.flagged_side == "buy_yes":
+            flag = "BUY_YES"
+        elif r.flagged_side == "buy_no":
+            flag = "BUY_NO"
+
         lines.append(
             f"{r.ticker:<28} {date_str:<10} {r.strike_desc:<14} "
             f"{bid + '/' + ask:<10} "
+            f"{fmt(r.hours_to_close, 1, 5)} "
             f"{fmt(r.p_market_mid, 3)} {fmt(r.p_fair, 3)} "
-            f"{fmt(r.edge_buy_yes, 3, 8)} {fmt(r.edge_buy_no, 3, 8)} "
+            f"{fmt(r.net_edge_buy_yes, 3, 7)} {fmt(r.net_edge_buy_no, 3, 7)} "
+            f"{fmt(r.effective_edge_min, 3, 6)} {flag:<8} "
             f"{r.n_samples:>4} {r.note}"
         )
     return "\n".join(lines)
@@ -216,7 +269,12 @@ async def run_inspect(cfg: AppConfig, secrets: Secrets) -> list[EdgeRow]:
     forecasts = await _fetch_forecasts(cfg, secrets, cities)
     by_event_date = _ensembles_by_city_date(forecasts)
 
-    return _build_rows(markets, by_event_date)
+    return _build_rows(
+        markets,
+        by_event_date,
+        edge_min=cfg.trading.edge_min.default,
+        decay_hours=cfg.trading.close_decay_hours,
+    )
 
 
 def run_inspect_sync(cfg: AppConfig, secrets: Secrets) -> list[EdgeRow]:
