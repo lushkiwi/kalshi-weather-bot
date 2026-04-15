@@ -1,0 +1,43 @@
+{
+  "markets": [
+    {
+      "ticker": "KXHIGHNY-26APR15-T90",
+      "event_ticker": "KXHIGHNY-26APR15",
+      "series_ticker": "KXHIGHNY",
+      "status": "open",
+      "yes_bid": 8,
+      "yes_ask": 9,
+      "no_bid": 91,
+      "no_ask": 92,
+      "last_price": 9,
+      "volume": 150,
+      "open_interest": 100,
+      "floor_strike": 90,
+      "strike_type": "greater",
+      "expiration_time": "2026-04-16T14:00:00Z",
+      "close_time": "2026-04-16T00:00:00Z",
+      "rules_primary": "Settles YES if the high temperature at KNYC on 2026-04-15 exceeds 90F per NWS climate report.",
+      "settlement_source": "NWS CLINYC"
+    },
+    {
+      "ticker": "KXHIGHNY-26APR15-B79.5",
+      "event_ticker": "KXHIGHNY-26APR15",
+      "series_ticker": "KXHIGHNY",
+      "status": "open",
+      "yes_bid": 43,
+      "yes_ask": 44,
+      "no_bid": 56,
+      "no_ask": 57,
+      "volume": 320,
+      "open_interest": 400,
+      "floor_strike": 79,
+      "cap_strike": 80,
+      "strike_type": "between",
+      "expiration_time": "2026-04-16T14:00:00Z",
+      "close_time": "2026-04-16T00:00:00Z",
+      "rules_primary": "Settles YES if KNYC high is between 79 and 80F inclusive.",
+      "settlement_source": "NWS CLINYC"
+    }
+  ],
+  "cursor": ""
+}

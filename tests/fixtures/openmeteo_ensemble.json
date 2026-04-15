@@ -1,0 +1,16 @@
+{
+  "latitude": 40.78,
+  "longitude": -73.97,
+  "timezone": "America/New_York",
+  "generationtime_ms": 12.3,
+  "hourly_units": {"time": "iso8601", "temperature_2m": "°F"},
+  "hourly": {
+    "time": [
+      "2026-04-15T00:00", "2026-04-15T06:00", "2026-04-15T12:00", "2026-04-15T18:00",
+      "2026-04-16T00:00", "2026-04-16T06:00", "2026-04-16T12:00", "2026-04-16T18:00"
+    ],
+    "temperature_2m_member01_ncep_gefs025":      [55.0, 52.0, 70.0, 78.0, 60.0, 58.0, 75.0, 82.0],
+    "temperature_2m_member02_ncep_gefs025":      [54.0, 51.0, 72.0, 80.0, 59.0, 57.0, 77.0, 84.0],
+    "temperature_2m_member01_ecmwf_ifs025":      [56.0, 53.0, 71.0, 79.0, 61.0, 59.0, 76.0, 83.0]
+  }
+}

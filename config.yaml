@@ -1,0 +1,59 @@
+mode: paper                       # paper | demo | live
+
+kalshi:
+  env: demo                       # demo | production
+  rate_limit_per_sec: 8
+  request_timeout_sec: 15
+
+weather:
+  openmeteo:
+    models:
+      - gfs025
+      - ecmwf_ifs025
+      - icon_seamless
+    forecast_days: 3
+    rate_limit_per_sec: 5
+  nws:
+    user_agent: "kalshi-weather-bot (set-your-email@example.com)"
+    rate_limit_per_sec: 3
+
+series:
+  - KXHIGHNY
+  - KXHIGHCHI
+  - KXHIGHMIA
+  - KXHIGHAUS
+
+cities:
+  NY:  { lat: 40.7794, lon: -73.9691, tz: America/New_York,    station: KNYC }
+  CHI: { lat: 41.9796, lon: -87.9045, tz: America/Chicago,     station: KORD }
+  MIA: { lat: 25.7933, lon: -80.2906, tz: America/New_York,    station: KMIA }
+  AUS: { lat: 30.1945, lon: -97.6699, tz: America/Chicago,     station: KAUS }
+
+trading:
+  edge_min:
+    default: 0.04
+    rainfall: 0.06
+    snowfall: 0.08
+  close_decay_hours: 6            # linear ramp: edge_min -> 2*edge_min over last 6h
+  order_ttl_seconds: 180
+  aggressive: false
+  sizing: flat                    # flat | kelly_quarter (enable post-M6)
+  flat_size: 10                   # contracts per trade when sizing: flat
+
+risk:
+  max_contracts_per_market: 100
+  max_notional_per_event: 200
+  max_total_notional: 1000
+  max_daily_loss_usd: 100
+  kalshi_stale_seconds: 60
+  openmeteo_stale_seconds: 1200
+  nws_stale_seconds: 3600
+
+alerts:
+  ntfy_topic: ""                  # set to a private topic like kalshi-bot-xxxxxxxxxx
+  ntfy_base_url: https://ntfy.sh
+  fill_alert_min_size: 25
+
+recorder:
+  db_path: data/recorder.sqlite3
+  raw_archive_after_days: 7
