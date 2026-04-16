@@ -1,4 +1,4 @@
-mode: paper                       # paper | demo | live
+mode: demo                       # paper | demo | live
 
 kalshi:
   env: demo                       # demo | production
@@ -50,7 +50,7 @@ risk:
   nws_stale_seconds: 3600
 
 alerts:
-  ntfy_topic: ""                  # set to a private topic like kalshi-bot-xxxxxxxxxx
+  ntfy_topic: "shikhar-kalshi-bot-2006"                  # set to a private topic like kalshi-bot-xxxxxxxxxx
   ntfy_base_url: https://ntfy.sh
   fill_alert_min_size: 25
 
