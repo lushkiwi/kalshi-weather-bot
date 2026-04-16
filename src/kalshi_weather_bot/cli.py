@@ -90,12 +90,23 @@ def tick(
 @app.command()
 def run(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
+    cron: Annotated[str, typer.Option("--cron", help="Cron schedule (UTC) for the trading tick.")] = "*/5 * * * *",
+    kill_lock: Annotated[Path, typer.Option("--kill-lock")] = Path("kill.lock"),
     log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
 ) -> None:
     """Start the trading scheduler (paper / demo / live per config)."""
-    _bootstrap(config, log_level)
-    typer.echo("run (APScheduler loop) is implemented in Milestone 5.")
-    raise typer.Exit(code=2)
+    from kalshi_weather_bot.alerts.notifier import Notifier
+    from kalshi_weather_bot.scheduler.daemon import run_scheduler
+
+    cfg, secrets = _bootstrap(config, log_level)
+    if cfg.mode == "live":
+        _require_live_confirmation(secrets)
+    notifier = Notifier(cfg.alerts, token=secrets.ntfy_token)
+    asyncio.run(
+        run_scheduler(
+            cfg, secrets, cron=cron, kill_lock=kill_lock, notifier=notifier
+        )
+    )
 
 
 @app.command()
