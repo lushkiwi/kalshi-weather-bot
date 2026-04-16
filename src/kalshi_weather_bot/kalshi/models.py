@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 StrikeType = Literal["greater", "less", "between", "structured"]
-MarketStatus = Literal["open", "active", "closed", "settled", "unopened"]
+MarketStatus = Literal["open", "active", "closed", "settled", "finalized", "unopened"]
 
 
 class Market(BaseModel):
@@ -31,6 +31,8 @@ class Market(BaseModel):
     strike_type: StrikeType | None = None
     expiration_time: datetime | None = None
     close_time: datetime | None = None
+    result: str | None = None                 # 'yes' | 'no' (populated after settlement)
+    expiration_value: str | None = None        # observed value e.g. "87.00"
     rules_primary: str | None = None
     settlement_source: str | None = None
     title: str | None = None

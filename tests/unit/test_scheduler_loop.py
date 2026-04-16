@@ -24,12 +24,13 @@ from kalshi_weather_bot.weather.models import EnsembleForecast, ForecastSample
 
 
 NOW = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+TARGET_DATE = date(2026, 4, 17)
 
 
 def _mkt(ticker: str, bid: int | None, ask: int | None, strike: float) -> Market:
     return Market(
         ticker=ticker,
-        event_ticker="KXHIGHNY-26APR15",
+        event_ticker="KXHIGHNY-26APR17",
         series_ticker="KXHIGHNY",
         status="open",
         yes_bid=bid,
@@ -45,7 +46,7 @@ def _forecast(values: list[float]) -> dict:
     samples = [
         ForecastSample(
             city="NY",
-            target_date=date(2026, 4, 15),
+            target_date=TARGET_DATE,
             source="gfs025",
             member=i,
             variable="tmax_f",
@@ -56,9 +57,9 @@ def _forecast(values: list[float]) -> dict:
         for i, v in enumerate(values)
     ]
     ef = EnsembleForecast(
-        city="NY", target_date=date(2026, 4, 15), variable="tmax_f", samples=samples
+        city="NY", target_date=TARGET_DATE, variable="tmax_f", samples=samples
     )
-    return {("NY", date(2026, 4, 15)): ef}
+    return {("NY", TARGET_DATE): ef}
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -106,11 +107,11 @@ async def test_run_tick_skipped_when_killed(tmp_path: Path, monkeypatch) -> None
 async def test_run_tick_end_to_end_places_paper_order(tmp_path: Path, monkeypatch) -> None:
     from kalshi_weather_bot.scheduler import loop as loop_mod
 
-    markets = [_mkt("KXHIGHNY-26APR15-T80", bid=40, ask=46, strike=80.0)]
+    markets = [_mkt("KXHIGHNY-26APR17-T80", bid=40, ask=46, strike=80.0)]
     by_event_date = _forecast([85.0, 86.0, 87.0, 88.0, 89.0] * 20)
 
     async def fake_fetch(*a, **kw):
-        return markets, by_event_date
+        return markets, by_event_date, {}
 
     monkeypatch.setattr(loop_mod, "fetch_inputs", fake_fetch)
 
@@ -134,18 +135,17 @@ async def test_run_tick_halts_on_position_drift(tmp_path: Path, monkeypatch) -> 
     from kalshi_weather_bot.execution.paper import PaperBroker
     from kalshi_weather_bot.scheduler import loop as loop_mod
 
-    markets = [_mkt("KXHIGHNY-26APR15-T80", bid=40, ask=46, strike=80.0)]
+    markets = [_mkt("KXHIGHNY-26APR17-T80", bid=40, ask=46, strike=80.0)]
     by_event_date = _forecast([85.0, 86.0, 87.0, 88.0, 89.0] * 20)
 
     async def fake_fetch(*a, **kw):
-        return markets, by_event_date
+        return markets, by_event_date, {}
 
     monkeypatch.setattr(loop_mod, "fetch_inputs", fake_fetch)
 
     class FakeClient:
         async def get_positions(self):
-            # Kalshi says we hold 5 contracts but our DB is empty → drift.
-            return {"market_positions": [{"ticker": "KXHIGHNY-26APR15-T80", "position": 5}]}
+            return {"market_positions": [{"ticker": "KXHIGHNY-26APR17-T80", "position": 5}]}
 
     @asynccontextmanager
     async def fake_broker(cfg, secrets, rec):
@@ -158,7 +158,7 @@ async def test_run_tick_halts_on_position_drift(tmp_path: Path, monkeypatch) -> 
     lock = tmp_path / "kill.lock"
     summary = await run_tick(cfg, secrets=None, kill_lock=lock)  # type: ignore[arg-type]
 
-    assert summary.reconciliation_drift == {"KXHIGHNY-26APR15-T80": (0, 5)}
+    assert summary.reconciliation_drift == {"KXHIGHNY-26APR17-T80": (0, 5)}
     assert summary.n_fills == 0
     assert lock.exists()                                      # kill switch armed
 
@@ -168,11 +168,11 @@ async def test_run_tick_no_quotes_records_skip(tmp_path: Path, monkeypatch) -> N
     from kalshi_weather_bot.scheduler import loop as loop_mod
 
     # No bid/ask → nothing flagged → no orders.
-    markets = [_mkt("KXHIGHNY-26APR15-T80", bid=None, ask=None, strike=80.0)]
+    markets = [_mkt("KXHIGHNY-26APR17-T80", bid=None, ask=None, strike=80.0)]
     by_event_date = _forecast([85.0] * 100)
 
     async def fake_fetch(*a, **kw):
-        return markets, by_event_date
+        return markets, by_event_date, {}
 
     monkeypatch.setattr(loop_mod, "fetch_inputs", fake_fetch)
 

@@ -183,6 +183,52 @@ def status(
 
 
 @app.command()
+def settle(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
+    log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
+) -> None:
+    """Check Kalshi for settled markets and compute realized P&L."""
+    from kalshi_weather_bot.kalshi.client import KalshiClient
+    from kalshi_weather_bot.recorder.db import Recorder
+    from kalshi_weather_bot.recorder.settlements import (
+        check_settlements,
+        compute_realized_pnl,
+    )
+
+    cfg, secrets = _bootstrap(config, log_level)
+    key_id, pem = secrets.kalshi_credentials(cfg.kalshi.env)
+
+    async def _run() -> None:
+        async with Recorder(cfg.recorder.db_path) as rec:
+            async with KalshiClient(
+                key_id, pem,
+                env=cfg.kalshi.env,
+                rate_limit_per_sec=cfg.kalshi.rate_limit_per_sec,
+                timeout_sec=cfg.kalshi.request_timeout_sec,
+            ) as kc:
+                settled = await check_settlements(kc, rec)
+                if settled:
+                    for ticker, result in settled:
+                        typer.echo(f"  settled: {ticker} → {result}")
+                else:
+                    typer.echo("no new settlements")
+
+            pnl_rows = await compute_realized_pnl(rec)
+            if pnl_rows:
+                total = sum(r["pnl_cents"] for r in pnl_rows)
+                typer.echo(f"\nrealized P&L: {total / 100:+.2f} ({len(pnl_rows)} fills)")
+                for r in pnl_rows:
+                    typer.echo(
+                        f"  {r['ticker']} {r['side']} {r['count']}×{r['yes_price']}¢ "
+                        f"→ {r['result']} P&L={r['pnl_cents'] / 100:+.2f}"
+                    )
+            else:
+                typer.echo("\nno settled fills yet")
+
+    asyncio.run(_run())
+
+
+@app.command()
 def dashboard(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
     host: Annotated[str, typer.Option("--host")] = "0.0.0.0",

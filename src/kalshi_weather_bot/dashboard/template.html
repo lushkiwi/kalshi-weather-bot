@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>Kalshi Weather Bot</title>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+    --text: #e1e4ec; --muted: #8b8fa3; --accent: #6c7ee1;
+    --green: #34d399; --yellow: #fbbf24; --red: #f87171;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    padding: 24px; max-width: 960px; margin: 0 auto;
+  }
+  h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 20px; }
+  h2 { font-size: 1rem; font-weight: 600; color: var(--muted); text-transform: uppercase;
+       letter-spacing: 0.05em; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px;
+  }
+  .card.full { grid-column: 1 / -1; }
+  .stat-row { display: flex; justify-content: space-between; padding: 6px 0;
+              border-bottom: 1px solid var(--border); }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--muted); font-size: 0.875rem; }
+  .stat-value { font-weight: 600; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+         margin-right: 6px; vertical-align: middle; }
+  .dot.green { background: var(--green); }
+  .dot.yellow { background: var(--yellow); }
+  .dot.red { background: var(--red); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 6px;
+       border-bottom: 1px solid var(--border); }
+  td { padding: 8px 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
+           font-size: 0.75rem; font-weight: 600; }
+  .badge.yes { background: rgba(52,211,153,0.15); color: var(--green); }
+  .badge.no { background: rgba(251,191,36,0.15); color: var(--yellow); }
+  .badge.warn { background: rgba(251,191,36,0.15); color: var(--yellow); }
+  .badge.error { background: rgba(248,113,113,0.15); color: var(--red); }
+  .badge.critical { background: rgba(248,113,113,0.25); color: var(--red); }
+  .badge.info { background: rgba(108,126,225,0.15); color: var(--accent); }
+  .empty { color: var(--muted); font-style: italic; padding: 16px 0; text-align: center; }
+  .footer { color: var(--muted); font-size: 0.75rem; text-align: center; margin-top: 24px; }
+</style>
+</head>
+<body>
+
+<h1>Kalshi Weather Bot</h1>
+
+<div class="grid">
+
+  <div class="card">
+    <h2>Bot Status</h2>
+    <div class="stat-row">
+      <span class="stat-label">Mode</span>
+      <span class="stat-value">$mode</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Kill Switch</span>
+      <span class="stat-value">$kill_html</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Last Tick</span>
+      <span class="stat-value"><span class="dot $tick_dot"></span>$last_tick</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Ticks Today</span>
+      <span class="stat-value">$ticks_today</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>P&amp;L</h2>
+    <div class="stat-row">
+      <span class="stat-label">Realized P&amp;L</span>
+      <span class="stat-value" style="color:$pnl_color">$pnl_display</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Settled Trades</span>
+      <span class="stat-value">$settled_trades</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Open Positions</span>
+      <span class="stat-value">$open_trades</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Open Cost</span>
+      <span class="stat-value">$$$open_cost</span>
+    </div>
+  </div>
+
+  <div class="card full">
+    <h2>Positions</h2>
+    $positions_table
+  </div>
+
+  <div class="card full">
+    <h2>Latest Scan <span style="font-size:0.75rem;color:var(--muted);font-weight:400">$scan_meta</span></h2>
+    $scan_table
+  </div>
+
+  <div class="card full">
+    <h2>Alerts &amp; Errors</h2>
+    $alerts_table
+  </div>
+
+</div>
+
+<div class="footer">
+  auto-refreshes every 60s &middot; read-only view &middot; $now_utc UTC
+</div>
+
+</body>
+</html>

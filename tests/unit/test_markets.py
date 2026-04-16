@@ -40,6 +40,19 @@ def test_parse_orderbook_best_prices() -> None:
     assert book.best_yes_ask() == 45  # 100 - best_no_bid
 
 
+def test_parse_orderbook_fp_format() -> None:
+    raw = {
+        "orderbook_fp": {
+            "yes_dollars": [["0.0500", "426.00"], ["0.0600", "66.00"]],
+            "no_dollars": [["0.9000", "13.00"], ["0.9100", "250.00"]],
+        }
+    }
+    book = _parse_orderbook("KXHIGHNY-26APR16-T91", raw)
+    assert book.best_yes_bid() == 6
+    assert book.best_no_bid() == 91
+    assert book.best_yes_ask() == 9  # 100 - 91
+
+
 def test_market_models_validate_fixture(fixtures_dir: Path) -> None:
     data = json.loads((fixtures_dir / "kalshi_markets.json").read_text())
     markets = [Market.model_validate(m) for m in data["markets"]]

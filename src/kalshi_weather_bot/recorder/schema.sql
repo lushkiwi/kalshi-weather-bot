@@ -93,6 +93,33 @@ CREATE TABLE IF NOT EXISTS fills (
     mode TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tick_scans (
+    tick_id TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    city TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    strike TEXT NOT NULL,
+    target_date TEXT,
+    bid INTEGER,
+    ask INTEGER,
+    p_fair REAL,
+    p_market REAL,
+    net_edge_yes REAL,
+    net_edge_no REAL,
+    flagged TEXT,
+    n_samples INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_tick_scans_ts ON tick_scans(ts DESC);
+
+CREATE TABLE IF NOT EXISTS market_settlements (
+    ticker TEXT PRIMARY KEY,
+    event_ticker TEXT NOT NULL,
+    result TEXT NOT NULL,
+    expiration_value TEXT,
+    settled_ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_settlements_event ON market_settlements(event_ticker);
+
 CREATE TABLE IF NOT EXISTS settlements (
     event_ticker TEXT NOT NULL,
     city TEXT NOT NULL,

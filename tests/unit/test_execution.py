@@ -208,7 +208,7 @@ async def test_router_skips_when_risk_rejects(tmp_path: Path) -> None:
             tick_id="tick1",
             now=NOW,
         )
-        assert outcome.action == "skip_per_market_cap_reached"
+        assert outcome.action == "skip_position_filled"
         assert outcome.fill is None
         orders = await rec.fetchall("SELECT count(*) FROM orders")
         assert orders == [(0,)]
@@ -235,12 +235,10 @@ async def test_router_skips_when_no_quote(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_router_clamps_size_to_remaining_room(tmp_path: Path) -> None:
+async def test_router_clamps_size_to_total_notional(tmp_path: Path) -> None:
     async with Recorder(tmp_path / "rec.sqlite3") as rec:
         broker = PaperBroker(rec)
-        state = PortfolioState(
-            contracts_per_ticker={"KXHIGHNY-26APR15-T80": 95}
-        )
+        state = PortfolioState(total_contracts=997)
         outcome = await route(
             candidate=_cand("buy_yes"),
             market=_mkt(),
@@ -253,5 +251,5 @@ async def test_router_clamps_size_to_remaining_room(tmp_path: Path) -> None:
             now=NOW,
         )
         assert outcome.action == "buy_yes"
-        assert outcome.size == 5
-        assert state.contracts_per_ticker["KXHIGHNY-26APR15-T80"] == 100
+        assert outcome.size == 3
+        assert state.total_contracts == 1000

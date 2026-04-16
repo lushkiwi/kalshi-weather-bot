@@ -50,6 +50,8 @@ def approve_order(
         return LimitDecision(0, "daily_loss_breached")
 
     cur_mkt = state.contracts_per_ticker.get(ticker, 0)
+    if cur_mkt >= requested_size:
+        return LimitDecision(0, "position_filled")
     room_mkt = cfg.max_contracts_per_market - cur_mkt
     if room_mkt <= 0:
         return LimitDecision(0, "per_market_cap_reached")

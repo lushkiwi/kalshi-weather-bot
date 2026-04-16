@@ -43,10 +43,30 @@ def test_non_positive_size_rejected():
     assert d.reason == "non_positive_size"
 
 
+def test_position_filled_skips():
+    state = PortfolioState(contracts_per_ticker={"T": 10})
+    d = approve_order(
+        event_ticker="E", ticker="T", requested_size=10,
+        state=state, cfg=_cfg(),
+    )
+    assert d.approved_size == 0
+    assert d.reason == "position_filled"
+
+
+def test_position_below_target_tops_up():
+    state = PortfolioState(contracts_per_ticker={"T": 3})
+    d = approve_order(
+        event_ticker="E", ticker="T", requested_size=10,
+        state=state, cfg=_cfg(),
+    )
+    assert d.approved_size == 10
+    assert d.reason == "approved"
+
+
 def test_per_market_clamp():
     state = PortfolioState(contracts_per_ticker={"T": 95})
     d = approve_order(
-        event_ticker="E", ticker="T", requested_size=10,
+        event_ticker="E", ticker="T", requested_size=100,
         state=state, cfg=_cfg(),
     )
     assert d.approved_size == 5
@@ -56,11 +76,11 @@ def test_per_market_clamp():
 def test_per_market_full_rejects():
     state = PortfolioState(contracts_per_ticker={"T": 100})
     d = approve_order(
-        event_ticker="E", ticker="T", requested_size=10,
-        state=state, cfg=_cfg(),
+        event_ticker="E", ticker="T", requested_size=100,
+        state=state, cfg=_cfg(max_contracts_per_market=100),
     )
     assert d.approved_size == 0
-    assert d.reason == "per_market_cap_reached"
+    assert d.reason == "position_filled"
 
 
 def test_per_event_clamp():

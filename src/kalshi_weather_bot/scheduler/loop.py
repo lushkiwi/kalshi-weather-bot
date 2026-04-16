@@ -1,12 +1,4 @@
-"""Single trading-tick orchestrator.
-
-Callable from the CLI (``tick``) for one-shot runs and from APScheduler
-(M4 later) for the recurring loop. Everything the tick needs — fetch,
-risk-gate, route, record — is composed here so ``run_tick`` stays readable.
-
-Per-event policy (PLAN.md §4): at most one order per event per tick, picking
-the flagged candidate with the highest net edge.
-"""
+"""Single trading-tick orchestrator."""
 
 from __future__ import annotations
 
@@ -34,6 +26,7 @@ from kalshi_weather_bot.kalshi.models import Market
 from kalshi_weather_bot.kalshi.orders import KalshiBroker
 from kalshi_weather_bot.logging_setup import get_logger
 from kalshi_weather_bot.recorder.db import Recorder
+from kalshi_weather_bot.recorder.settlements import check_settlements
 from kalshi_weather_bot.risk.health import reconcile_positions
 from kalshi_weather_bot.risk.killswitch import activate, is_killed, read_reason
 
@@ -83,6 +76,39 @@ class TickSummary:
                 f"reason={o.reason}{suffix}"
             )
         return "\n".join(lines)
+
+
+async def _persist_scan(
+    rec: Recorder, tick_id: str, now: datetime, rows: list[EdgeRow]
+) -> None:
+    ts = int(now.timestamp())
+    tuples = [
+        (
+            tick_id,
+            ts,
+            r.city,
+            r.ticker,
+            r.strike_desc,
+            r.target_date.isoformat() if r.target_date else None,
+            r.market_yes_bid,
+            r.market_yes_ask,
+            r.p_fair,
+            r.p_market_mid,
+            r.net_edge_buy_yes,
+            r.net_edge_buy_no,
+            r.flagged_side,
+            r.n_samples,
+        )
+        for r in rows
+    ]
+    await rec.executemany(
+        "INSERT INTO tick_scans "
+        "(tick_id,ts,city,ticker,strike,target_date,bid,ask,"
+        "p_fair,p_market,net_edge_yes,net_edge_no,flagged,n_samples) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        tuples,
+    )
+    await rec.commit()
 
 
 def _pick_per_event_best(rows: list[EdgeRow], markets_by_ticker: dict[str, Market]) -> list[tuple[EdgeRow, Candidate, Market]]:
@@ -177,7 +203,7 @@ async def run_tick(
         log_.warning("tick_skipped_killed", reason=summary.kill_reason)
         return summary
 
-    markets, by_event_date = await fetch_inputs(cfg, secrets)
+    markets, by_event_date, nws_highs = await fetch_inputs(cfg, secrets)
     summary.n_markets = len(markets)
     markets_by_ticker = {m.ticker: m for m in markets}
 
@@ -187,6 +213,7 @@ async def run_tick(
         edge_min=cfg.trading.edge_min.default,
         decay_hours=cfg.trading.close_decay_hours,
         now=now,
+        nws_highs=nws_highs,
     )
     summary.n_rows = len(rows)
     summary.n_flagged = sum(1 for r in rows if r.flagged_side is not None)
@@ -194,6 +221,7 @@ async def run_tick(
     picks = _pick_per_event_best(rows, markets_by_ticker)
 
     async with Recorder(cfg.recorder.db_path) as rec:
+        await _persist_scan(rec, tick_id, now, rows)
         async with _broker_for_mode(cfg, secrets, rec) as (broker, client):
             # Paper reconciliation is meaningless (DB is the source of truth);
             # for demo/live we diff our DB view against Kalshi. A mismatch
@@ -245,6 +273,26 @@ async def run_tick(
                             f"{outcome.action} {outcome.fill.count} @ "
                             f"{outcome.fill.yes_price_cents}¢ fee={outcome.fill.fee_cents}¢",
                         )
+
+        # Check for newly settled markets (works in all modes since we
+        # always read from production Kalshi).
+        try:
+            key_id, pem = secrets.kalshi_credentials(cfg.kalshi.env)
+            async with KalshiClient(
+                key_id, pem,
+                env=cfg.kalshi.env,
+                rate_limit_per_sec=cfg.kalshi.rate_limit_per_sec,
+                timeout_sec=cfg.kalshi.request_timeout_sec,
+            ) as settle_client:
+                settled = await check_settlements(settle_client, rec)
+                if settled:
+                    log_.info(
+                        "settlements_recorded",
+                        count=len(settled),
+                        tickers=[t for t, _ in settled],
+                    )
+        except Exception as exc:
+            log_.debug("settlement_check_failed", error=str(exc))
 
     log_.info(
         "tick_done",

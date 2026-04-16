@@ -1,8 +1,4 @@
-"""inspect-edges orchestration: fetch markets + forecasts, print a raw edge table.
-
-M2 scope: no fees, no sizing, no trading. Shows fair vs market for a human
-sanity check. M3 extends this with fee-aware net edges.
-"""
+"""Edge inspection: fetch markets + forecasts, compute fair vs market, print edge table."""
 
 from __future__ import annotations
 
@@ -12,11 +8,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
+import numpy as np
+
 from kalshi_weather_bot.config import AppConfig, Secrets
 from kalshi_weather_bot.edge.detector import Candidate, evaluate
 from kalshi_weather_bot.edge.implied import MarketImplied, implied_from_market
 from kalshi_weather_bot.kalshi.client import KalshiClient
-from kalshi_weather_bot.kalshi.markets import list_active_weather_markets
+from kalshi_weather_bot.kalshi.markets import enrich_with_orderbooks, list_active_weather_markets
 from kalshi_weather_bot.kalshi.models import Market
 from kalshi_weather_bot.logging_setup import get_logger
 from kalshi_weather_bot.probability.threshold import (
@@ -26,6 +24,7 @@ from kalshi_weather_bot.probability.threshold import (
     event_coherence_error,
 )
 from kalshi_weather_bot.weather.models import EnsembleForecast
+from kalshi_weather_bot.weather.nws import NwsClient
 from kalshi_weather_bot.weather.openmeteo import OpenMeteoClient
 from kalshi_weather_bot.weather.stations import STATIONS, Station, by_series
 
@@ -101,6 +100,9 @@ def _ensembles_by_city_date(
     return out
 
 
+NWS_DIVERGENCE_THRESHOLD_F = 3.0
+
+
 async def _fetch_forecasts(
     cfg: AppConfig, secrets: Secrets, cities: list[Station]
 ) -> dict[str, list[EnsembleForecast]]:
@@ -114,6 +116,27 @@ async def _fetch_forecasts(
         for st in cities:
             raw = await om.fetch_raw(st)
             out[st.city_code] = om.parse_daily_max(raw, st, fetched_at)
+    return out
+
+
+async def _fetch_nws_highs(
+    cfg: AppConfig, cities: list[Station]
+) -> dict[tuple[str, date], float]:
+    """Fetch NWS point-forecast daily highs for each city.
+
+    Returns {(city_code, target_date): high_f}. Failures are silently skipped
+    so a NWS outage doesn't block the whole pipeline.
+    """
+    out: dict[tuple[str, date], float] = {}
+    async with NwsClient(user_agent=cfg.weather.nws.user_agent) as nws:
+        for st in cities:
+            try:
+                raw = await nws.point_forecast(st)
+                highs = nws.extract_daily_highs_f(raw)
+                for day_str, temp_f in highs.items():
+                    out[(st.city_code, date.fromisoformat(day_str))] = float(temp_f)
+            except Exception as exc:
+                log.debug("nws_fetch_failed", city=st.city_code, error=str(exc))
     return out
 
 
@@ -131,8 +154,11 @@ def _build_rows(
     edge_min: float,
     decay_hours: float,
     now: datetime | None = None,
+    nws_highs: dict[tuple[str, date], float] | None = None,
 ) -> list[EdgeRow]:
     now = now or datetime.now(tz=timezone.utc)
+    today = now.date()
+    nws = nws_highs or {}
     # Group markets by event so we can log coherence errors.
     by_event: dict[str, list[Market]] = defaultdict(list)
     for m in markets:
@@ -141,6 +167,9 @@ def _build_rows(
     rows: list[EdgeRow] = []
     for event_ticker, event_markets in by_event.items():
         target = parse_event_date(event_ticker)
+        if target is not None and target <= today:
+            log.debug("skip_same_day_event", event_ticker=event_ticker, target=target.isoformat())
+            continue
         # Kalshi's /markets payload doesn't reliably populate series_ticker on each
         # Market row, but the event_ticker always starts with it.
         series = event_markets[0].series_ticker or _series_from_event(event_ticker)
@@ -159,6 +188,26 @@ def _build_rows(
                     ),
                 )
 
+        # NWS cross-check: if the ensemble median diverges from the NWS
+        # deterministic forecast by more than 3°F, our ensemble is stale or
+        # biased — skip the entire event rather than trade on bad signal.
+        nws_skip = False
+        if ef is not None and station is not None and target is not None:
+            nws_high = nws.get((station.city_code, target))
+            if nws_high is not None:
+                ensemble_median = float(np.median(ef.values()))
+                drift = abs(ensemble_median - nws_high)
+                if drift > NWS_DIVERGENCE_THRESHOLD_F:
+                    log.warning(
+                        "nws_divergence_skip",
+                        event_ticker=event_ticker,
+                        city=station.city_code,
+                        ensemble_median=round(ensemble_median, 1),
+                        nws_high=nws_high,
+                        drift=round(drift, 1),
+                    )
+                    nws_skip = True
+
         event_probs: list[FairProbability] = []
 
         for m in event_markets:
@@ -169,6 +218,15 @@ def _build_rows(
             n_samples = 0
             if ef is None:
                 note = "no forecast for event"
+            elif nws_skip:
+                samples = ef.values()
+                n_samples = len(samples)
+                try:
+                    fair = contract_probability(m, samples)
+                    p_fair = fair.p_fair
+                except ThresholdError:
+                    pass
+                note = "NWS divergence >3°F"
             else:
                 samples = ef.values()
                 n_samples = len(samples)
@@ -187,7 +245,7 @@ def _build_rows(
             flagged_side: str | None = None
             htc = _hours_to_close(m, now)
 
-            if p_fair is not None and htc is not None:
+            if p_fair is not None and htc is not None and not nws_skip:
                 cands: list[Candidate] = evaluate(
                     p_fair,
                     implied,
@@ -280,8 +338,8 @@ def format_table(rows: list[EdgeRow]) -> str:
 
 async def fetch_inputs(
     cfg: AppConfig, secrets: Secrets
-) -> tuple[list[Market], dict[tuple[str, date], EnsembleForecast]]:
-    """Pull live markets + ensembles. Shared by inspect-edges and the trading tick."""
+) -> tuple[list[Market], dict[tuple[str, date], EnsembleForecast], dict[tuple[str, date], float]]:
+    """Pull live markets + ensembles + NWS highs. Shared by inspect-edges and the trading tick."""
     cities = [st for st in STATIONS.values() if st.series_ticker in cfg.series]
     key_id, pem = secrets.kalshi_credentials(cfg.kalshi.env)
 
@@ -293,20 +351,23 @@ async def fetch_inputs(
         timeout_sec=cfg.kalshi.request_timeout_sec,
     ) as kc:
         markets = await list_active_weather_markets(kc, cfg.series)
+        await enrich_with_orderbooks(kc, markets)
 
     forecasts = await _fetch_forecasts(cfg, secrets, cities)
     by_event_date = _ensembles_by_city_date(forecasts)
-    return markets, by_event_date
+    nws_highs = await _fetch_nws_highs(cfg, cities)
+    return markets, by_event_date, nws_highs
 
 
 async def run_inspect(cfg: AppConfig, secrets: Secrets) -> list[EdgeRow]:
     """Fetch markets + ensembles, compute fair probs + raw edges, return rows."""
-    markets, by_event_date = await fetch_inputs(cfg, secrets)
+    markets, by_event_date, nws_highs = await fetch_inputs(cfg, secrets)
     return _build_rows(
         markets,
         by_event_date,
         edge_min=cfg.trading.edge_min.default,
         decay_hours=cfg.trading.close_decay_hours,
+        nws_highs=nws_highs,
     )
 
 
@@ -317,10 +378,12 @@ def build_rows(
     edge_min: float,
     decay_hours: float,
     now: datetime | None = None,
+    nws_highs: dict[tuple[str, date], float] | None = None,
 ) -> list[EdgeRow]:
     """Public facade for ``_build_rows`` — tick loop uses the same row shape."""
     return _build_rows(
-        markets, by_event_date, edge_min=edge_min, decay_hours=decay_hours, now=now
+        markets, by_event_date, edge_min=edge_min, decay_hours=decay_hours,
+        now=now, nws_highs=nws_highs,
     )
 
 

@@ -21,6 +21,7 @@ def test_parse_event_date():
 
 
 NOW = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
+TARGET_DATE = date(2026, 4, 16)
 
 
 def _mkt(
@@ -33,7 +34,7 @@ def _mkt(
 ) -> Market:
     return Market(
         ticker=ticker,
-        event_ticker="KXHIGHNY-26APR15",
+        event_ticker="KXHIGHNY-26APR16",
         series_ticker=series_ticker,
         status="open",
         yes_bid=yes_bid,
@@ -45,12 +46,12 @@ def _mkt(
     )
 
 
-def _forecast_for_ny_apr15(values: list[float]) -> EnsembleForecast:
+def _forecast_for_ny(values: list[float]) -> EnsembleForecast:
     fetched = datetime(2026, 4, 14, tzinfo=timezone.utc)
     samples = [
         ForecastSample(
             city="NY",
-            target_date=date(2026, 4, 15),
+            target_date=TARGET_DATE,
             source="gfs025",
             member=i,
             variable="tmax_f",
@@ -62,21 +63,21 @@ def _forecast_for_ny_apr15(values: list[float]) -> EnsembleForecast:
     ]
     return EnsembleForecast(
         city="NY",
-        target_date=date(2026, 4, 15),
+        target_date=TARGET_DATE,
         variable="tmax_f",
         samples=samples,
     )
 
 
 def test_build_rows_computes_edges():
-    markets = [_mkt("KXHIGHNY-26APR15-T80", yes_bid=40, yes_ask=46, strike=80.0)]
-    ef = _forecast_for_ny_apr15([78.0, 80.0, 82.0, 84.0, 86.0] * 20)
+    markets = [_mkt("KXHIGHNY-26APR16-T80", yes_bid=40, yes_ask=46, strike=80.0)]
+    ef = _forecast_for_ny([78.0, 80.0, 82.0, 84.0, 86.0] * 20)
     by_event_date = _ensembles_by_city_date({"NY": [ef]})
     rows = _build_rows(markets, by_event_date, edge_min=0.04, decay_hours=6.0, now=NOW)
     assert len(rows) == 1
     r = rows[0]
-    assert r.ticker == "KXHIGHNY-26APR15-T80"
-    assert r.target_date == date(2026, 4, 15)
+    assert r.ticker == "KXHIGHNY-26APR16-T80"
+    assert r.target_date == TARGET_DATE
     assert r.city == "NY"
     assert r.p_fair is not None
     assert r.edge_buy_yes is not None
@@ -87,7 +88,7 @@ def test_build_rows_computes_edges():
 
 
 def test_build_rows_missing_forecast_sets_note():
-    markets = [_mkt("KXHIGHNY-26APR15-T80", yes_bid=40, yes_ask=46, strike=80.0)]
+    markets = [_mkt("KXHIGHNY-26APR16-T80", yes_bid=40, yes_ask=46, strike=80.0)]
     rows = _build_rows(markets, {}, edge_min=0.04, decay_hours=6.0, now=NOW)
     assert len(rows) == 1
     assert rows[0].p_fair is None
@@ -95,10 +96,8 @@ def test_build_rows_missing_forecast_sets_note():
 
 
 def test_build_rows_matches_forecast_when_series_ticker_missing():
-    # Kalshi's /markets response sometimes omits series_ticker on the Market.
-    # The event_ticker prefix ("KXHIGHNY-26APR15") should be the fallback.
-    markets = [_mkt("KXHIGHNY-26APR15-T80", 40, 46, 80.0, series_ticker=None)]
-    ef = _forecast_for_ny_apr15([78.0, 80.0, 82.0, 84.0, 86.0] * 20)
+    markets = [_mkt("KXHIGHNY-26APR16-T80", 40, 46, 80.0, series_ticker=None)]
+    ef = _forecast_for_ny([78.0, 80.0, 82.0, 84.0, 86.0] * 20)
     by_event_date = _ensembles_by_city_date({"NY": [ef]})
     rows = _build_rows(markets, by_event_date, edge_min=0.04, decay_hours=6.0, now=NOW)
     assert rows[0].p_fair is not None
@@ -106,22 +105,87 @@ def test_build_rows_matches_forecast_when_series_ticker_missing():
 
 
 def test_build_rows_flags_side_with_clear_edge():
-    # Samples centered at 86 → P(X>80) is very high. Market yes_ask=46 → huge buy_yes edge.
-    markets = [_mkt("KXHIGHNY-26APR15-T80", yes_bid=40, yes_ask=46, strike=80.0)]
-    ef = _forecast_for_ny_apr15([84.0, 85.0, 86.0, 87.0, 88.0] * 20)
+    markets = [_mkt("KXHIGHNY-26APR16-T80", yes_bid=40, yes_ask=46, strike=80.0)]
+    ef = _forecast_for_ny([84.0, 85.0, 86.0, 87.0, 88.0] * 20)
     by_event_date = _ensembles_by_city_date({"NY": [ef]})
     rows = _build_rows(markets, by_event_date, edge_min=0.04, decay_hours=6.0, now=NOW)
     assert rows[0].flagged_side == "buy_yes"
 
 
+def test_build_rows_skips_same_day_events():
+    same_day = date(2026, 4, 15)
+    markets = [Market(
+        ticker="KXHIGHNY-26APR15-T80",
+        event_ticker="KXHIGHNY-26APR15",
+        series_ticker="KXHIGHNY",
+        status="open",
+        yes_bid=99,
+        yes_ask=None,
+        floor_strike=80.0,
+        strike_type="greater",
+        expiration_time=NOW + timedelta(hours=6),
+        close_time=NOW + timedelta(hours=6),
+    )]
+    ef = EnsembleForecast(
+        city="NY",
+        target_date=same_day,
+        variable="tmax_f",
+        samples=[
+            ForecastSample(city="NY", target_date=same_day, source="gfs025",
+                           member=i, variable="tmax_f", value=v,
+                           fetched_at=NOW, run_time=NOW)
+            for i, v in enumerate([85.0] * 100)
+        ],
+    )
+    by_event_date = _ensembles_by_city_date({"NY": [ef]})
+    rows = _build_rows(markets, by_event_date, edge_min=0.04, decay_hours=6.0, now=NOW)
+    assert len(rows) == 0
+
+
+def test_build_rows_nws_divergence_suppresses_flag():
+    """When NWS high diverges >3°F from ensemble median, edges should not be flagged."""
+    markets = [_mkt("KXHIGHNY-26APR16-T80", yes_bid=40, yes_ask=46, strike=80.0)]
+    # Ensemble centered at 86°F
+    ef = _forecast_for_ny([84.0, 85.0, 86.0, 87.0, 88.0] * 20)
+    by_event_date = _ensembles_by_city_date({"NY": [ef]})
+    # NWS says 92°F — 6°F drift, well above threshold
+    nws_highs = {("NY", TARGET_DATE): 92.0}
+    rows = _build_rows(
+        markets, by_event_date, edge_min=0.04, decay_hours=6.0,
+        now=NOW, nws_highs=nws_highs,
+    )
+    assert len(rows) == 1
+    assert rows[0].flagged_side is None
+    assert "NWS divergence" in rows[0].note
+    # p_fair is still computed for display
+    assert rows[0].p_fair is not None
+
+
+def test_build_rows_nws_within_threshold_allows_flag():
+    """When NWS high is within 3°F of ensemble median, edges proceed normally."""
+    markets = [_mkt("KXHIGHNY-26APR16-T80", yes_bid=40, yes_ask=46, strike=80.0)]
+    # Ensemble centered at 86°F
+    ef = _forecast_for_ny([84.0, 85.0, 86.0, 87.0, 88.0] * 20)
+    by_event_date = _ensembles_by_city_date({"NY": [ef]})
+    # NWS says 88°F — 2°F drift, within threshold
+    nws_highs = {("NY", TARGET_DATE): 88.0}
+    rows = _build_rows(
+        markets, by_event_date, edge_min=0.04, decay_hours=6.0,
+        now=NOW, nws_highs=nws_highs,
+    )
+    assert len(rows) == 1
+    assert rows[0].flagged_side == "buy_yes"
+    assert rows[0].note == ""
+
+
 def test_format_table_renders_header_and_rows():
     rows = [
         EdgeRow(
-            ticker="KXHIGHNY-26APR15-T80",
-            event_ticker="KXHIGHNY-26APR15",
+            ticker="KXHIGHNY-26APR16-T80",
+            event_ticker="KXHIGHNY-26APR16",
             city="NY",
             strike_desc="> 80.0",
-            target_date=date(2026, 4, 15),
+            target_date=TARGET_DATE,
             hours_to_close=24.0,
             market_yes_bid=40,
             market_yes_ask=46,
@@ -138,6 +202,6 @@ def test_format_table_renders_header_and_rows():
     ]
     text = format_table(rows)
     assert "ticker" in text
-    assert "KXHIGHNY-26APR15-T80" in text
-    assert "2026-04-15" in text
+    assert "KXHIGHNY-26APR16-T80" in text
+    assert "2026-04-16" in text
     assert "BUY_YES" in text

@@ -1,7 +1,7 @@
-mode: demo                       # paper | demo | live
+mode: paper                      # paper | demo | live
 
 kalshi:
-  env: demo                       # demo | production
+  env: production                 # demo | production
   rate_limit_per_sec: 8
   request_timeout_sec: 15
 
