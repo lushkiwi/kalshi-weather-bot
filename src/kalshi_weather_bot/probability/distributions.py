@@ -73,14 +73,21 @@ def kde_prob_between(
 
 
 def _silverman_bandwidth(samples: np.ndarray) -> float:
+    """Silverman's rule with IQR correction for peaked/non-Gaussian distributions.
+
+    Uses min(std, IQR/1.34) as the scale estimate — the standard textbook
+    improvement that avoids oversmoothing when the data is more concentrated
+    than a Gaussian.
+    """
     n = samples.size
     if n < 2:
         return 1.0
     std = _sigma(samples)
     if std <= 0:
-        # All samples identical: a hairline KDE still beats delta mass.
         return 0.5
-    return 1.06 * std * n ** (-1 / 5)
+    iqr = float(np.percentile(samples, 75) - np.percentile(samples, 25))
+    scale = min(std, iqr / 1.34) if iqr > 0 else std
+    return 0.9 * scale * n ** (-1 / 5)
 
 
 def prob_greater(

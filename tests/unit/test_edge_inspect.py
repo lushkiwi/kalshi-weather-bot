@@ -178,6 +178,45 @@ def test_build_rows_nws_within_threshold_allows_flag():
     assert rows[0].note == ""
 
 
+def test_build_rows_model_undershoot_suppresses_flags():
+    """When fair prob sum is much less than market sum, flags are suppressed."""
+    # Two 'between' contracts in same event. Market prices them high (30/31
+    # and 50/51), but ensemble is wide so model gives low fair values.
+    # The model sums well below 70% of market → undershoot gate fires.
+    m1 = Market(
+        ticker="KXHIGHNY-26APR16-B86.5",
+        event_ticker="KXHIGHNY-26APR16",
+        series_ticker="KXHIGHNY",
+        status="open",
+        yes_bid=30, yes_ask=31,
+        floor_strike=86.0, cap_strike=87.0,
+        strike_type="between",
+        expiration_time=NOW + timedelta(hours=24),
+        close_time=NOW + timedelta(hours=24),
+    )
+    m2 = Market(
+        ticker="KXHIGHNY-26APR16-B88.5",
+        event_ticker="KXHIGHNY-26APR16",
+        series_ticker="KXHIGHNY",
+        status="open",
+        yes_bid=50, yes_ask=51,
+        floor_strike=88.0, cap_strike=89.0,
+        strike_type="between",
+        expiration_time=NOW + timedelta(hours=24),
+        close_time=NOW + timedelta(hours=24),
+    )
+    # Wide ensemble: uniform 80-96, so each 1°F band gets ~6% fair prob.
+    # Two bands sum to ~12% fair vs market ~81% → ratio ~0.15.
+    ef = _forecast_for_ny(list(range(80, 96)) * 8)
+    by_event_date = _ensembles_by_city_date({"NY": [ef]})
+    rows = _build_rows(
+        [m1, m2], by_event_date, edge_min=0.04, decay_hours=6.0, now=NOW,
+    )
+    assert len(rows) == 2
+    assert all(r.flagged_side is None for r in rows)
+    assert all("undershoot" in r.note for r in rows)
+
+
 def test_format_table_renders_header_and_rows():
     rows = [
         EdgeRow(

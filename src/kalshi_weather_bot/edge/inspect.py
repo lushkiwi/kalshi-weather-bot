@@ -290,14 +290,34 @@ def _build_rows(
 
         if len(event_probs) >= 2:
             err = event_coherence_error(event_probs)
-            # Only overshoot is a real red flag: Kalshi routinely leaves
-            # brackets unlisted, so undershoots are expected.
             if err > 0.05:
                 log.warning(
                     "event_overshoot",
                     event_ticker=event_ticker,
                     sum_minus_one=round(err, 4),
                 )
+
+            # Compare model total vs market total for the listed contracts.
+            # If the model's sum is much lower, the KDE is systematically
+            # underpricing every band → all "buy NO" edges are phantom.
+            fair_sum = sum(p.p_fair for p in event_probs)
+            market_sum = sum(
+                (m.yes_bid + m.yes_ask) / 200.0
+                for m in event_markets
+                if m.yes_bid is not None and m.yes_ask is not None
+            )
+            if market_sum > 0 and fair_sum / market_sum < 0.7:
+                log.warning(
+                    "model_undershoot_skip",
+                    event_ticker=event_ticker,
+                    fair_sum=round(fair_sum, 3),
+                    market_sum=round(market_sum, 3),
+                    ratio=round(fair_sum / market_sum, 2),
+                )
+                for r in rows:
+                    if r.event_ticker == event_ticker and r.flagged_side is not None:
+                        r.flagged_side = None
+                        r.note = f"model undershoot ({fair_sum:.0%} vs market {market_sum:.0%})"
 
     return rows
 
