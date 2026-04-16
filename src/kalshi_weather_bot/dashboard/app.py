@@ -208,6 +208,46 @@ def _read_db_stats(db_path: str) -> dict:
     return out
 
 
+def _read_tick_log(log_path: str) -> dict:
+    """Parse tick events from the JSON log to track daemon activity.
+
+    The DB only records ticks that produce decisions/fills. Most ticks in a
+    quiet market end with ``tick_no_edges`` and write nothing. We parse the
+    log so the dashboard always reflects daemon liveness.
+    """
+    tick_events = {"tick_no_edges", "tick_done", "tick_complete", "tick_skipped_killed"}
+    last_ts: float | None = None
+    ticks_today = 0
+    today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+    try:
+        lines = Path(log_path).read_text().splitlines()
+    except Exception:
+        return {"last_tick_ts": None, "ticks_today_log": 0}
+
+    for line in reversed(lines[-1000:]):
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        event = entry.get("event", "")
+        if event not in tick_events:
+            continue
+        ts_str = entry.get("timestamp", "")
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            continue
+        if last_ts is None:
+            last_ts = ts
+        if ts_str.startswith(today_str):
+            ticks_today += 1
+
+    return {"last_tick_ts": last_ts, "ticks_today_log": ticks_today}
+
+
 def _read_alerts(log_path: str, limit: int = 20) -> list[dict]:
     alerts: list[dict] = []
     try:
@@ -308,6 +348,7 @@ def create_app(
 
     async def homepage(request: Request) -> HTMLResponse:
         stats = _read_db_stats(db_path)
+        tick_log = _read_tick_log(log_path)
 
         kl = Path(kill_lock)
         if is_killed(kl):
@@ -316,7 +357,10 @@ def create_app(
         else:
             kill_html = '<span class="dot green"></span>Clear'
 
-        last_ts = stats["last_tick_ts"]
+        # Prefer log-based tick tracking (covers no-edge ticks that write
+        # nothing to the DB) but fall back to DB if available.
+        last_ts = tick_log["last_tick_ts"] or stats["last_tick_ts"]
+        ticks_today = max(tick_log["ticks_today_log"], stats["ticks_today"])
         if last_ts:
             mins = _minutes_ago(last_ts)
             last_tick = f"{_ts_to_str(last_ts)} ({mins}m ago)"
@@ -332,7 +376,7 @@ def create_app(
             kill_html=kill_html,
             last_tick=last_tick,
             tick_dot=tick_dot,
-            ticks_today=stats["ticks_today"],
+            ticks_today=ticks_today,
             trades_today=stats["trades_today"],
             contracts_today=stats["contracts_today"],
             cost_today=f"{stats['cost_cents'] / 100:.2f}",
