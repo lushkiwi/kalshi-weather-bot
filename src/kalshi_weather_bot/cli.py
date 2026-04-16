@@ -182,5 +182,28 @@ def status(
     asyncio.run(_dump())
 
 
+@app.command()
+def dashboard(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
+    host: Annotated[str, typer.Option("--host")] = "0.0.0.0",
+    port: Annotated[int, typer.Option("--port")] = 8050,
+    kill_lock: Annotated[Path, typer.Option("--kill-lock")] = Path("kill.lock"),
+) -> None:
+    """Start a read-only web dashboard for monitoring the soak."""
+    import uvicorn
+
+    from kalshi_weather_bot.dashboard.app import create_app
+
+    cfg, _ = _bootstrap(config, "WARNING")
+    web = create_app(
+        db_path=cfg.recorder.db_path,
+        log_path="logs/bot.log",
+        kill_lock=str(kill_lock),
+        mode=cfg.mode,
+    )
+    typer.echo(f"dashboard at http://{host}:{port}")
+    uvicorn.run(web, host=host, port=port, log_level="warning")
+
+
 if __name__ == "__main__":
     app()
