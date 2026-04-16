@@ -10,9 +10,11 @@ the flagged candidate with the highest net edge.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import AsyncIterator
 from uuid import uuid4
 
 from kalshi_weather_bot.alerts.notifier import Notifier
@@ -24,12 +26,16 @@ from kalshi_weather_bot.edge.inspect import (
     build_rows,
     fetch_inputs,
 )
+from kalshi_weather_bot.execution.broker import Broker
 from kalshi_weather_bot.execution.paper import PaperBroker
 from kalshi_weather_bot.execution.router import RouteOutcome, route
+from kalshi_weather_bot.kalshi.client import KalshiClient
 from kalshi_weather_bot.kalshi.models import Market
+from kalshi_weather_bot.kalshi.orders import KalshiBroker
 from kalshi_weather_bot.logging_setup import get_logger
 from kalshi_weather_bot.recorder.db import Recorder
-from kalshi_weather_bot.risk.killswitch import is_killed, read_reason
+from kalshi_weather_bot.risk.health import reconcile_positions
+from kalshi_weather_bot.risk.killswitch import activate, is_killed, read_reason
 
 log = get_logger("scheduler.loop")
 
@@ -44,6 +50,7 @@ class TickSummary:
     n_markets: int = 0
     n_rows: int = 0
     n_flagged: int = 0
+    reconciliation_drift: dict[str, tuple[int, int]] = field(default_factory=dict)
     outcomes: list[RouteOutcome] = field(default_factory=list)
 
     @property
@@ -58,6 +65,12 @@ class TickSummary:
             f"  markets={self.n_markets} rows={self.n_rows} flagged={self.n_flagged}",
             f"  outcomes={len(self.outcomes)} fills={self.n_fills}",
         ]
+        if self.reconciliation_drift:
+            lines.append("  position drift:")
+            for ticker, (db_val, live_val) in sorted(
+                self.reconciliation_drift.items()
+            ):
+                lines.append(f"    {ticker}: db={db_val} live={live_val}")
         for o in self.outcomes:
             suffix = ""
             if o.fill:
@@ -98,6 +111,54 @@ def _pick_per_event_best(rows: list[EdgeRow], markets_by_ticker: dict[str, Marke
     return list(per_event.values())
 
 
+@asynccontextmanager
+async def _broker_for_mode(
+    cfg: AppConfig, secrets: Secrets, recorder: Recorder
+) -> AsyncIterator[tuple[Broker, KalshiClient | None]]:
+    """Yield the right broker for ``cfg.mode`` along with the live client (if any).
+
+    Paper mode needs no network client; demo/live share the same client
+    setup so reconciliation and order submission hit the same session.
+    """
+    if cfg.mode == "paper":
+        yield PaperBroker(recorder, mode="paper"), None
+        return
+
+    key_id, pem = secrets.kalshi_credentials(cfg.kalshi.env)
+    async with KalshiClient(
+        key_id,
+        pem,
+        env=cfg.kalshi.env,
+        rate_limit_per_sec=cfg.kalshi.rate_limit_per_sec,
+        timeout_sec=cfg.kalshi.request_timeout_sec,
+    ) as kc:
+        yield KalshiBroker(kc, recorder, mode=cfg.mode), kc
+
+
+async def _reconcile_with_live(
+    broker: PaperBroker, client: KalshiClient, mode: str
+) -> dict[str, tuple[int, int]]:
+    """Compare DB-derived paper positions to live Kalshi positions.
+
+    Only exercised in modes that talk to the real API. Returns a drift map
+    keyed by ticker — empty if everything matches.
+    """
+    db_state = await broker.load_portfolio()
+    try:
+        live_resp = await client.get_positions()
+    except Exception as e:
+        log.bind(mode=mode).warning("reconcile_fetch_failed", error=str(e))
+        return {}
+    live_positions: dict[str, int] = {}
+    for pos in live_resp.get("market_positions") or live_resp.get("positions") or []:
+        ticker = pos.get("ticker")
+        count = int(pos.get("position", 0))
+        if ticker and count != 0:
+            live_positions[ticker] = abs(count)
+    report = reconcile_positions(db_state.contracts_per_ticker, live_positions)
+    return report.drifted_tickers
+
+
 async def run_tick(
     cfg: AppConfig,
     secrets: Secrets,
@@ -131,34 +192,59 @@ async def run_tick(
     summary.n_flagged = sum(1 for r in rows if r.flagged_side is not None)
 
     picks = _pick_per_event_best(rows, markets_by_ticker)
-    if not picks:
-        log_.info("tick_no_edges", rows=len(rows))
-        return summary
 
     async with Recorder(cfg.recorder.db_path) as rec:
-        broker = PaperBroker(rec, mode=cfg.mode)
-        state = await broker.load_portfolio()
-        for row, candidate, market in picks:
-            outcome = await route(
-                candidate=candidate,
-                market=market,
-                event_ticker=row.event_ticker,
-                cfg=cfg,
-                broker=broker,
-                recorder=rec,
-                state=state,
-                tick_id=tick_id,
-                now=now,
-            )
-            summary.outcomes.append(outcome)
-            if outcome.fill and notifier is not None:
-                if outcome.fill.count >= cfg.alerts.fill_alert_min_size:
-                    await notifier.send(
-                        "info",
-                        f"[{cfg.mode}] fill {outcome.fill.ticker}",
-                        f"{outcome.action} {outcome.fill.count} @ "
-                        f"{outcome.fill.yes_price_cents}¢ fee={outcome.fill.fee_cents}¢",
+        async with _broker_for_mode(cfg, secrets, rec) as (broker, client):
+            # Paper reconciliation is meaningless (DB is the source of truth);
+            # for demo/live we diff our DB view against Kalshi. A mismatch
+            # halts trading for this tick — next tick will retry.
+            if client is not None:
+                paper_view = PaperBroker(rec, mode=cfg.mode)
+                drift = await _reconcile_with_live(paper_view, client, cfg.mode)
+                if drift:
+                    summary.reconciliation_drift = drift
+                    log_.warning("position_drift_halt", drift=drift)
+                    activate(
+                        kill_lock,
+                        f"position_drift tick={tick_id} tickers={sorted(drift)[:3]}",
                     )
+                    if notifier is not None:
+                        await notifier.send(
+                            "critical",
+                            f"[{cfg.mode}] position drift — kill switch armed",
+                            "\n".join(
+                                f"{t}: db={d} live={l}"
+                                for t, (d, l) in sorted(drift.items())
+                            ),
+                        )
+                    return summary
+
+            state = await broker.load_portfolio()
+            if not picks:
+                log_.info("tick_no_edges", rows=len(rows))
+                return summary
+
+            for row, candidate, market in picks:
+                outcome = await route(
+                    candidate=candidate,
+                    market=market,
+                    event_ticker=row.event_ticker,
+                    cfg=cfg,
+                    broker=broker,
+                    recorder=rec,
+                    state=state,
+                    tick_id=tick_id,
+                    now=now,
+                )
+                summary.outcomes.append(outcome)
+                if outcome.fill and notifier is not None:
+                    if outcome.fill.count >= cfg.alerts.fill_alert_min_size:
+                        await notifier.send(
+                            "info",
+                            f"[{cfg.mode}] fill {outcome.fill.ticker}",
+                            f"{outcome.action} {outcome.fill.count} @ "
+                            f"{outcome.fill.yes_price_cents}¢ fee={outcome.fill.fee_cents}¢",
+                        )
 
     log_.info(
         "tick_done",

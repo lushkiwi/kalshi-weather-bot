@@ -13,37 +13,22 @@ single source of truth for paper P&L.
 
 from __future__ import annotations
 
-import hashlib
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime
 
 from kalshi_weather_bot.edge.detector import Candidate
 from kalshi_weather_bot.edge.fees import taker_fee_cents
+from kalshi_weather_bot.execution.broker import (
+    BrokerFill,
+    client_order_id,
+    event_from_ticker,
+)
 from kalshi_weather_bot.kalshi.models import Market
 from kalshi_weather_bot.recorder.db import Recorder
 from kalshi_weather_bot.risk.limits import PortfolioState
 
 
-def _client_order_id(tick_id: str, ticker: str, side: str) -> str:
-    return hashlib.sha256(f"{tick_id}|{ticker}|{side}".encode()).hexdigest()[:24]
-
-
-def _event_from_ticker(ticker: str) -> str:
-    """Weather tickers are ``<event>-<suffix>``; drop the suffix."""
-    return ticker.rsplit("-", 1)[0]
-
-
-@dataclass(slots=True)
-class PaperFill:
-    client_order_id: str
-    kalshi_order_id: str
-    ticker: str
-    side: str                 # 'yes' | 'no'
-    count: int
-    yes_price_cents: int      # price paid on the YES side; for side='no' this is (100 - yes_bid)
-    fee_cents: int
-    filled_ts: int
+PaperFill = BrokerFill
 
 
 class PaperBroker:
@@ -61,7 +46,7 @@ class PaperBroker:
         size: int,
         tick_id: str,
         now: datetime,
-    ) -> PaperFill | None:
+    ) -> BrokerFill | None:
         """Instantly fill a buy order at the opposite side of the book.
 
         Returns ``None`` if the required quote is missing — the caller
@@ -80,7 +65,7 @@ class PaperBroker:
         else:
             return None
 
-        coid = _client_order_id(tick_id, market.ticker, candidate.side)
+        coid = client_order_id(tick_id, market.ticker, candidate.side)
         kalshi_id = f"paper-{coid}"
         fee = taker_fee_cents(size, fill_price / 100.0)
         ts = int(now.timestamp())
@@ -98,7 +83,7 @@ class PaperBroker:
         )
         await self._rec.commit()
 
-        return PaperFill(
+        return BrokerFill(
             client_order_id=coid,
             kalshi_order_id=kalshi_id,
             ticker=market.ticker,
@@ -120,7 +105,7 @@ class PaperBroker:
             state.contracts_per_ticker[ticker] = (
                 state.contracts_per_ticker.get(ticker, 0) + int(count)
             )
-            events[_event_from_ticker(ticker)] += int(count)
+            events[event_from_ticker(ticker)] += int(count)
             state.total_contracts += int(count)
         state.contracts_per_event = dict(events)
         return state

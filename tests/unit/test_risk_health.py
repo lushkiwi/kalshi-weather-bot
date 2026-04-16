@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from kalshi_weather_bot.config import RiskConfig
-from kalshi_weather_bot.risk.health import check_health
+from kalshi_weather_bot.risk.health import check_health, reconcile_positions
 
 
 def _cfg() -> RiskConfig:
@@ -68,3 +68,20 @@ def test_missing_timestamps_count_as_stale():
     assert not h.healthy
     assert set(h.reasons) == {"kalshi_stale", "openmeteo_stale"}
     assert h.nws_stale
+
+
+def test_reconcile_matches_when_same():
+    report = reconcile_positions({"A": 10, "B": 5}, {"A": 10, "B": 5})
+    assert report.matches
+    assert report.drifted_tickers == {}
+
+
+def test_reconcile_flags_mismatch():
+    report = reconcile_positions({"A": 10}, {"A": 10, "B": 3})
+    assert not report.matches
+    assert report.drifted_tickers == {"B": (0, 3)}
+
+
+def test_reconcile_flags_opposite_drift():
+    report = reconcile_positions({"A": 10}, {"A": 7})
+    assert report.drifted_tickers == {"A": (10, 7)}

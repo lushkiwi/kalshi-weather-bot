@@ -6,11 +6,15 @@ from typing import Annotated
 
 import typer
 
+from datetime import date
+
 from kalshi_weather_bot.config import Secrets, load_config
 from kalshi_weather_bot.logging_setup import get_logger, setup_logging
 
 app = typer.Typer(add_completion=False, help="Kalshi weather trading bot.")
 log = get_logger("cli")
+
+LIVE_CONFIRM_SENTINEL = "yes-i-mean-it"
 
 
 def _bootstrap(config_path: Path, log_level: str) -> tuple:
@@ -18,6 +22,25 @@ def _bootstrap(config_path: Path, log_level: str) -> tuple:
     cfg = load_config(config_path)
     secrets = Secrets.from_env()
     return cfg, secrets
+
+
+def _require_live_confirmation(secrets: Secrets) -> None:
+    """Two-factor guard before any code path submits real-money orders."""
+    if secrets.kalshi_live_confirm != LIVE_CONFIRM_SENTINEL:
+        typer.echo(
+            "refusing to run in live mode: set "
+            f"KALSHI_LIVE_CONFIRM={LIVE_CONFIRM_SENTINEL} to arm live trading.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    today = date.today().isoformat()
+    expected = f"LIVE {today}"
+    entered = typer.prompt(
+        f"Type exactly '{expected}' to confirm live trading for today"
+    ).strip()
+    if entered != expected:
+        typer.echo("confirmation mismatch — aborting.", err=True)
+        raise typer.Exit(code=2)
 
 
 @app.command()
@@ -57,6 +80,8 @@ def tick(
     from kalshi_weather_bot.scheduler.loop import run_tick
 
     cfg, secrets = _bootstrap(config, log_level)
+    if cfg.mode == "live":
+        _require_live_confirmation(secrets)
     notifier = Notifier(cfg.alerts, token=secrets.ntfy_token)
     summary = asyncio.run(run_tick(cfg, secrets, kill_lock=kill_lock, notifier=notifier))
     typer.echo(summary.pretty())

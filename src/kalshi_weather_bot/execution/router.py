@@ -13,7 +13,7 @@ from datetime import datetime
 
 from kalshi_weather_bot.config import AppConfig
 from kalshi_weather_bot.edge.detector import Candidate
-from kalshi_weather_bot.execution.paper import PaperBroker, PaperFill
+from kalshi_weather_bot.execution.broker import Broker, BrokerFill
 from kalshi_weather_bot.execution.sizing import flat_size
 from kalshi_weather_bot.kalshi.models import Market
 from kalshi_weather_bot.recorder.db import Recorder
@@ -30,7 +30,7 @@ class RouteOutcome:
     size: int
     limit_price_cents: int
     reason: str
-    fill: PaperFill | None
+    fill: BrokerFill | None
 
 
 def _limit_price(candidate: Candidate, market: Market) -> int:
@@ -64,7 +64,7 @@ async def route(
     market: Market,
     event_ticker: str,
     cfg: AppConfig,
-    broker: PaperBroker,
+    broker: Broker,
     recorder: Recorder,
     state: PortfolioState,
     tick_id: str,

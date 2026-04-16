@@ -127,6 +127,43 @@ async def test_run_tick_end_to_end_places_paper_order(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_tick_halts_on_position_drift(tmp_path: Path, monkeypatch) -> None:
+    """Demo/live tick arms the kill switch and exits when DB vs Kalshi diverge."""
+    from contextlib import asynccontextmanager
+
+    from kalshi_weather_bot.execution.paper import PaperBroker
+    from kalshi_weather_bot.scheduler import loop as loop_mod
+
+    markets = [_mkt("KXHIGHNY-26APR15-T80", bid=40, ask=46, strike=80.0)]
+    by_event_date = _forecast([85.0, 86.0, 87.0, 88.0, 89.0] * 20)
+
+    async def fake_fetch(*a, **kw):
+        return markets, by_event_date
+
+    monkeypatch.setattr(loop_mod, "fetch_inputs", fake_fetch)
+
+    class FakeClient:
+        async def get_positions(self):
+            # Kalshi says we hold 5 contracts but our DB is empty → drift.
+            return {"market_positions": [{"ticker": "KXHIGHNY-26APR15-T80", "position": 5}]}
+
+    @asynccontextmanager
+    async def fake_broker(cfg, secrets, rec):
+        yield PaperBroker(rec, mode="demo"), FakeClient()
+
+    monkeypatch.setattr(loop_mod, "_broker_for_mode", fake_broker)
+
+    cfg = _cfg(tmp_path)
+    cfg = cfg.model_copy(update={"mode": "demo"})
+    lock = tmp_path / "kill.lock"
+    summary = await run_tick(cfg, secrets=None, kill_lock=lock)  # type: ignore[arg-type]
+
+    assert summary.reconciliation_drift == {"KXHIGHNY-26APR15-T80": (0, 5)}
+    assert summary.n_fills == 0
+    assert lock.exists()                                      # kill switch armed
+
+
+@pytest.mark.asyncio
 async def test_run_tick_no_quotes_records_skip(tmp_path: Path, monkeypatch) -> None:
     from kalshi_weather_bot.scheduler import loop as loop_mod
 

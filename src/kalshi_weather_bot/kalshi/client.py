@@ -159,8 +159,28 @@ class KalshiClient:
     async def get_positions(self) -> dict[str, Any]:
         return await self._request("GET", "/portfolio/positions")
 
-    async def get_fills(self, *, min_ts: int | None = None, limit: int = 500) -> dict[str, Any]:
+    async def get_fills(
+        self,
+        *,
+        min_ts: int | None = None,
+        order_id: str | None = None,
+        ticker: str | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {"limit": limit}
         if min_ts is not None:
             params["min_ts"] = min_ts
+        if order_id is not None:
+            params["order_id"] = order_id
+        if ticker is not None:
+            params["ticker"] = ticker
         return await self._request("GET", "/portfolio/fills", params=params)
+
+    async def post_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request("POST", "/portfolio/orders", json=payload)
+
+    async def cancel_order(self, order_id: str) -> dict[str, Any]:
+        return await self._request("DELETE", f"/portfolio/orders/{order_id}")
+
+    async def get_order(self, order_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/portfolio/orders/{order_id}")
