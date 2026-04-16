@@ -13,3 +13,4 @@ kill.lock
 dist/
 build/
 .DS_Store
+.env

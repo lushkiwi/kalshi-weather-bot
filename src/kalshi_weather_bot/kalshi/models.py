@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 StrikeType = Literal["greater", "less", "between", "structured"]
-MarketStatus = Literal["open", "closed", "settled", "unopened"]
+MarketStatus = Literal["open", "active", "closed", "settled", "unopened"]
 
 
 class Market(BaseModel):

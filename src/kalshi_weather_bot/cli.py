@@ -47,34 +47,103 @@ def inspect_edges(
 
 
 @app.command()
+def tick(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
+    kill_lock: Annotated[Path, typer.Option("--kill-lock")] = Path("kill.lock"),
+    log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
+) -> None:
+    """Run a single trading tick end-to-end (paper mode by default)."""
+    from kalshi_weather_bot.alerts.notifier import Notifier
+    from kalshi_weather_bot.scheduler.loop import run_tick
+
+    cfg, secrets = _bootstrap(config, log_level)
+    notifier = Notifier(cfg.alerts, token=secrets.ntfy_token)
+    summary = asyncio.run(run_tick(cfg, secrets, kill_lock=kill_lock, notifier=notifier))
+    typer.echo(summary.pretty())
+
+
+@app.command()
 def run(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
     log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
 ) -> None:
     """Start the trading scheduler (paper / demo / live per config)."""
     _bootstrap(config, log_level)
-    typer.echo("run is implemented in Milestone 4.")
+    typer.echo("run (APScheduler loop) is implemented in Milestone 5.")
     raise typer.Exit(code=2)
 
 
 @app.command()
 def kill(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
+    reason: Annotated[str, typer.Option("--reason", "-r")] = "manual",
+    kill_lock: Annotated[Path, typer.Option("--kill-lock")] = Path("kill.lock"),
 ) -> None:
-    """Cancel all open orders and halt the scheduler via kill.lock."""
-    _bootstrap(config, "INFO")
-    typer.echo("kill is implemented in Milestone 4.")
-    raise typer.Exit(code=2)
+    """Write kill.lock so the scheduler halts before placing any more orders."""
+    from kalshi_weather_bot.risk.killswitch import activate, is_killed, read_reason
+
+    if is_killed(kill_lock):
+        typer.echo(f"already killed: {read_reason(kill_lock)}")
+        raise typer.Exit(code=0)
+    activate(kill_lock, reason)
+    typer.echo(f"kill switch armed at {kill_lock} (reason={reason!r})")
+
+
+@app.command()
+def unkill(
+    kill_lock: Annotated[Path, typer.Option("--kill-lock")] = Path("kill.lock"),
+) -> None:
+    """Remove kill.lock so the scheduler can resume."""
+    from kalshi_weather_bot.risk.killswitch import deactivate
+
+    if deactivate(kill_lock):
+        typer.echo(f"kill switch cleared at {kill_lock}")
+    else:
+        typer.echo(f"no kill lock at {kill_lock}")
 
 
 @app.command()
 def status(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("config.yaml"),
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
+    kill_lock: Annotated[Path, typer.Option("--kill-lock")] = Path("kill.lock"),
 ) -> None:
-    """Print recent activity summary from the recorder DB."""
-    _bootstrap(config, "INFO")
-    typer.echo("status is implemented in Milestone 4.")
-    raise typer.Exit(code=2)
+    """Print kill-switch state plus the most recent decisions and fills."""
+    from kalshi_weather_bot.recorder.db import Recorder
+    from kalshi_weather_bot.risk.killswitch import is_killed, read_reason
+
+    cfg, _ = _bootstrap(config, "WARNING")
+
+    if is_killed(kill_lock):
+        typer.echo(f"KILLED: {read_reason(kill_lock)}")
+    else:
+        typer.echo("kill switch: clear")
+
+    async def _dump() -> None:
+        async with Recorder(cfg.recorder.db_path) as rec:
+            decisions = await rec.fetchall(
+                "SELECT snapshot_ts, ticker, action, size, limit_price, mode, reason "
+                "FROM decisions ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            fills = await rec.fetchall(
+                "SELECT filled_ts, ticker, count, yes_price, fee_cents, mode "
+                "FROM fills ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+
+        typer.echo(f"\nrecent decisions ({len(decisions)}):")
+        for ts, ticker, action, size, limit_price, mode, reason in decisions:
+            typer.echo(
+                f"  ts={ts} {mode} {ticker} {action} "
+                f"size={size} limit={limit_price} reason={reason}"
+            )
+        typer.echo(f"\nrecent fills ({len(fills)}):")
+        for ts, ticker, count, price, fee, mode in fills:
+            typer.echo(
+                f"  ts={ts} {mode} {ticker} count={count} @ {price}¢ fee={fee}¢"
+            )
+
+    asyncio.run(_dump())
 
 
 if __name__ == "__main__":

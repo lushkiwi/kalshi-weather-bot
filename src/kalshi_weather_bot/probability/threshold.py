@@ -51,9 +51,12 @@ def contract_probability(
         return FairProbability(market.ticker, p, "greater", sigma_inflation, n)
 
     if st == "less":
-        if market.floor_strike is None:
-            raise ThresholdError(f"{market.ticker} has strike_type=less but no floor_strike")
-        p = prob_less(samples, market.floor_strike, sigma_inflation=sigma_inflation)
+        # Kalshi V2 populates cap_strike for "less than" contracts and leaves
+        # floor_strike empty; fall back to floor_strike for legacy payloads.
+        threshold = market.cap_strike if market.cap_strike is not None else market.floor_strike
+        if threshold is None:
+            raise ThresholdError(f"{market.ticker} has strike_type=less but no cap/floor strike")
+        p = prob_less(samples, threshold, sigma_inflation=sigma_inflation)
         return FairProbability(market.ticker, p, "less", sigma_inflation, n)
 
     if st == "between":
@@ -72,8 +75,12 @@ def contract_probability(
 def event_coherence_error(probs: Sequence[FairProbability]) -> float:
     """Signed deviation from 1.0 of the sum of p_fair over an event.
 
-    For a fully-tiled event ladder this should be ≈ 0. The caller decides
-    whether to warn and skip the event (PLAN.md §3 uses |err| < 0.02).
+    Kalshi only lists active brackets, so the ladder is routinely partial —
+    sums in the 0.6–0.9 range are normal and not a signal of model error.
+    Only *overshoots* (sum > 1) indicate a real problem: overlapping
+    contracts, a parsing bug, or a KDE edge that put probability in two
+    places. Callers should gate warnings on ``err > tolerance`` (positive
+    side only), not ``abs(err)``.
     """
     return sum(p.p_fair for p in probs) - 1.0
 

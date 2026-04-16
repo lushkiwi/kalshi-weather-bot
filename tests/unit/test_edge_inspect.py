@@ -23,11 +23,18 @@ def test_parse_event_date():
 NOW = datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc)
 
 
-def _mkt(ticker: str, yes_bid: int, yes_ask: int, strike: float) -> Market:
+def _mkt(
+    ticker: str,
+    yes_bid: int,
+    yes_ask: int,
+    strike: float,
+    *,
+    series_ticker: str | None = "KXHIGHNY",
+) -> Market:
     return Market(
         ticker=ticker,
         event_ticker="KXHIGHNY-26APR15",
-        series_ticker="KXHIGHNY",
+        series_ticker=series_ticker,
         status="open",
         yes_bid=yes_bid,
         yes_ask=yes_ask,
@@ -85,6 +92,17 @@ def test_build_rows_missing_forecast_sets_note():
     assert len(rows) == 1
     assert rows[0].p_fair is None
     assert "no forecast" in rows[0].note
+
+
+def test_build_rows_matches_forecast_when_series_ticker_missing():
+    # Kalshi's /markets response sometimes omits series_ticker on the Market.
+    # The event_ticker prefix ("KXHIGHNY-26APR15") should be the fallback.
+    markets = [_mkt("KXHIGHNY-26APR15-T80", 40, 46, 80.0, series_ticker=None)]
+    ef = _forecast_for_ny_apr15([78.0, 80.0, 82.0, 84.0, 86.0] * 20)
+    by_event_date = _ensembles_by_city_date({"NY": [ef]})
+    rows = _build_rows(markets, by_event_date, edge_min=0.04, decay_hours=6.0, now=NOW)
+    assert rows[0].p_fair is not None
+    assert rows[0].note == ""
 
 
 def test_build_rows_flags_side_with_clear_edge():

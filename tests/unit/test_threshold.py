@@ -44,6 +44,30 @@ def test_contract_probability_less_is_complement_of_greater():
     assert abs((p_g + p_l) - 1.0) < 1e-9
 
 
+def test_contract_probability_less_uses_cap_strike_v2():
+    # Kalshi V2 "less than" contracts populate cap_strike, not floor_strike.
+    samples = [70.0, 75.0, 80.0, 85.0, 90.0] * 20
+    m = Market(
+        ticker="KXHIGHAUS-26APR15-T81",
+        event_ticker="KXHIGHAUS-26APR15",
+        series_ticker="KXHIGHAUS",
+        status="open",
+        floor_strike=None,
+        cap_strike=81.0,
+        strike_type="less",
+        expiration_time=datetime(2026, 4, 16, tzinfo=timezone.utc),
+    )
+    fair = contract_probability(m, samples)
+    assert fair.method == "less"
+    assert 0.0 <= fair.p_fair <= 1.0
+
+
+def test_contract_probability_less_missing_both_strikes_raises():
+    m = _mkt("KXHIGHNY-26APR15-L", "less", None)
+    with pytest.raises(ThresholdError):
+        contract_probability(m, [70.0, 75.0, 80.0])
+
+
 def test_contract_probability_between():
     samples = list(range(70, 91)) * 5
     m = _mkt("KXHIGHNY-26APR15-B79.5", "between", 75.0, 85.0)

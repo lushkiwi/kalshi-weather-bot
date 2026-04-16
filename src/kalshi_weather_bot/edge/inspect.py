@@ -52,6 +52,11 @@ def parse_event_date(event_ticker: str) -> date | None:
     return date(2000 + int(yy), _MONTHS[mon], int(dd))
 
 
+def _series_from_event(event_ticker: str) -> str:
+    """Event tickers are `<SERIES>-<DATE>`; pull the series prefix."""
+    return event_ticker.split("-", 1)[0]
+
+
 @dataclass(slots=True)
 class EdgeRow:
     ticker: str
@@ -78,7 +83,9 @@ def _strike_desc(m: Market) -> str:
     if m.strike_type == "greater":
         return f"> {m.floor_strike}"
     if m.strike_type == "less":
-        return f"< {m.floor_strike}"
+        # V2 populates cap_strike; legacy payloads populated floor_strike.
+        threshold = m.cap_strike if m.cap_strike is not None else m.floor_strike
+        return f"< {threshold}"
     if m.strike_type == "between":
         return f"{m.floor_strike}–{m.cap_strike}"
     return m.strike_type or "?"
@@ -134,10 +141,23 @@ def _build_rows(
     rows: list[EdgeRow] = []
     for event_ticker, event_markets in by_event.items():
         target = parse_event_date(event_ticker)
-        station = by_series(event_markets[0].series_ticker or "")
+        # Kalshi's /markets payload doesn't reliably populate series_ticker on each
+        # Market row, but the event_ticker always starts with it.
+        series = event_markets[0].series_ticker or _series_from_event(event_ticker)
+        station = by_series(series)
         ef: EnsembleForecast | None = None
         if station is not None and target is not None:
             ef = by_event_date.get((station.city_code, target))
+            if ef is None:
+                log.debug(
+                    "forecast_miss",
+                    event_ticker=event_ticker,
+                    city=station.city_code,
+                    target=target.isoformat(),
+                    have_dates=sorted(
+                        d.isoformat() for (c, d) in by_event_date if c == station.city_code
+                    ),
+                )
 
         event_probs: list[FairProbability] = []
 
@@ -212,8 +232,14 @@ def _build_rows(
 
         if len(event_probs) >= 2:
             err = event_coherence_error(event_probs)
-            if abs(err) > 0.02:
-                log.warning("event_incoherent", event=event_ticker, sum_minus_one=round(err, 4))
+            # Only overshoot is a real red flag: Kalshi routinely leaves
+            # brackets unlisted, so undershoots are expected.
+            if err > 0.05:
+                log.warning(
+                    "event_overshoot",
+                    event_ticker=event_ticker,
+                    sum_minus_one=round(err, 4),
+                )
 
     return rows
 
@@ -252,8 +278,10 @@ def format_table(rows: list[EdgeRow]) -> str:
     return "\n".join(lines)
 
 
-async def run_inspect(cfg: AppConfig, secrets: Secrets) -> list[EdgeRow]:
-    """Fetch markets + ensembles, compute fair probs + raw edges, return rows."""
+async def fetch_inputs(
+    cfg: AppConfig, secrets: Secrets
+) -> tuple[list[Market], dict[tuple[str, date], EnsembleForecast]]:
+    """Pull live markets + ensembles. Shared by inspect-edges and the trading tick."""
     cities = [st for st in STATIONS.values() if st.series_ticker in cfg.series]
     key_id, pem = secrets.kalshi_credentials(cfg.kalshi.env)
 
@@ -268,12 +296,31 @@ async def run_inspect(cfg: AppConfig, secrets: Secrets) -> list[EdgeRow]:
 
     forecasts = await _fetch_forecasts(cfg, secrets, cities)
     by_event_date = _ensembles_by_city_date(forecasts)
+    return markets, by_event_date
 
+
+async def run_inspect(cfg: AppConfig, secrets: Secrets) -> list[EdgeRow]:
+    """Fetch markets + ensembles, compute fair probs + raw edges, return rows."""
+    markets, by_event_date = await fetch_inputs(cfg, secrets)
     return _build_rows(
         markets,
         by_event_date,
         edge_min=cfg.trading.edge_min.default,
         decay_hours=cfg.trading.close_decay_hours,
+    )
+
+
+def build_rows(
+    markets: list[Market],
+    by_event_date: dict[tuple[str, date], EnsembleForecast],
+    *,
+    edge_min: float,
+    decay_hours: float,
+    now: datetime | None = None,
+) -> list[EdgeRow]:
+    """Public facade for ``_build_rows`` — tick loop uses the same row shape."""
+    return _build_rows(
+        markets, by_event_date, edge_min=edge_min, decay_hours=decay_hours, now=now
     )
 
 
