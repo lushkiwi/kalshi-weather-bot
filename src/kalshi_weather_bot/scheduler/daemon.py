@@ -111,9 +111,16 @@ async def run_scheduler(
 ) -> None:
     """Block forever, firing ``run_tick`` on ``cron``. Returns on SIGINT/SIGTERM."""
     runner = _TickRunner(cfg, secrets, kill_lock=kill_lock, notifier=notifier)
+
+    # APScheduler 3.x uses asyncio.iscoroutinefunction() to decide whether
+    # to await the callable. That check returns False for class instances
+    # with an async __call__, so we wrap in a plain async def.
+    async def _tick_job() -> None:
+        await runner()
+
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
-        runner,
+        _tick_job,
         CronTrigger.from_crontab(cron, timezone="UTC"),
         id="trading_tick",
         max_instances=1,          # defense-in-depth alongside the overlap guard
