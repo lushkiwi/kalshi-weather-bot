@@ -167,8 +167,8 @@ def _build_rows(
     rows: list[EdgeRow] = []
     for event_ticker, event_markets in by_event.items():
         target = parse_event_date(event_ticker)
-        if target is not None and target <= today:
-            log.debug("skip_same_day_event", event_ticker=event_ticker, target=target.isoformat())
+        if target is not None and target < today:
+            log.debug("skip_past_event", event_ticker=event_ticker, target=target.isoformat())
             continue
         # Kalshi's /markets payload doesn't reliably populate series_ticker on each
         # Market row, but the event_ticker always starts with it.

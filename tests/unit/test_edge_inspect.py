@@ -112,11 +112,11 @@ def test_build_rows_flags_side_with_clear_edge():
     assert rows[0].flagged_side == "buy_yes"
 
 
-def test_build_rows_skips_same_day_events():
-    same_day = date(2026, 4, 15)
+def test_build_rows_skips_past_events():
+    yesterday = date(2026, 4, 14)
     markets = [Market(
-        ticker="KXHIGHNY-26APR15-T80",
-        event_ticker="KXHIGHNY-26APR15",
+        ticker="KXHIGHNY-26APR14-T80",
+        event_ticker="KXHIGHNY-26APR14",
         series_ticker="KXHIGHNY",
         status="open",
         yes_bid=99,
@@ -128,10 +128,10 @@ def test_build_rows_skips_same_day_events():
     )]
     ef = EnsembleForecast(
         city="NY",
-        target_date=same_day,
+        target_date=yesterday,
         variable="tmax_f",
         samples=[
-            ForecastSample(city="NY", target_date=same_day, source="gfs025",
+            ForecastSample(city="NY", target_date=yesterday, source="gfs025",
                            member=i, variable="tmax_f", value=v,
                            fetched_at=NOW, run_time=NOW)
             for i, v in enumerate([85.0] * 100)
